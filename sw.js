@@ -1,5 +1,5 @@
 /* Barographe — cache hors ligne */
-const VERSION = 'barographe-v3';
+const VERSION = 'barographe-v6';
 const SHELL = [
   './', './index.html', './manifest.webmanifest',
   './apple-touch-icon.png', './icon-192.png', './icon-512.png'
