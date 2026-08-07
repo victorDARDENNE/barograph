@@ -25,6 +25,7 @@
   --pompe-fort:#FF8A3D;
   --chute:#7C8CFF;
   --lance:#4FD6E4;
+  --alerte:#FF6B4A;
   --pad:18px;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -170,6 +171,7 @@ h2 em{font-style:normal;font-size:11px;letter-spacing:.06em;text-transform:none;
 /* ---------- strips ---------- */
 .strip{background:var(--nuit);border:1px solid var(--trait);border-radius:16px;padding:12px 4px 6px;overflow:hidden}
 .strip canvas{display:block;width:100%;height:110px}
+#rscatter{height:150px}
 .strip .cap{display:flex;justify-content:space-between;padding:0 12px 6px;font-size:10px;
   letter-spacing:.12em;text-transform:uppercase;color:var(--ardoise)}
 .spark{display:grid;grid-template-columns:1fr;gap:10px}
@@ -180,6 +182,12 @@ h2 em{font-style:normal;font-size:11px;letter-spacing:.06em;text-transform:none;
 .sp canvas{display:block;width:100%;height:42px;margin-top:4px}
 
 /* ---------- source ---------- */
+.linkbox{margin-top:10px;border:1px solid var(--trait);border-radius:14px;background:var(--nuit);
+  padding:9px 0 4px;overflow:hidden}
+.linkbox canvas{display:block;width:100%;height:96px}
+.lkhd{display:flex;justify-content:space-between;padding:0 14px 4px;font-size:10px;
+  letter-spacing:.12em;text-transform:uppercase;color:var(--ardoise)}
+.lkhd .mono{letter-spacing:.02em;text-transform:none;font-size:12px;color:var(--craie)}
 .overview{margin-top:10px;border:1px solid var(--trait);border-radius:14px;background:var(--nuit);
   padding:8px 8px 4px;touch-action:none;user-select:none;-webkit-user-select:none}
 .overview canvas{display:block;width:100%;height:46px}
@@ -251,6 +259,11 @@ section[hidden]{display:none}
     <div><div class="k">Vario</div><div class="v mono" id="rV">—<u>m/s</u></div></div>
   </div>
 
+  <div class="linkbox" id="lk" hidden>
+    <div class="lkhd"><span>Liaison</span><span class="mono" id="lkVal">—</span></div>
+    <canvas id="link"></canvas>
+  </div>
+
   <div class="overview" id="ov" hidden>
     <canvas id="mini"></canvas>
     <div class="ovbar">
@@ -309,7 +322,18 @@ section[hidden]{display:none}
     <canvas id="vario"></canvas>
   </div>
 
-  <h2>Liaison &amp; énergie</h2>
+  <section id="secRange" hidden>
+    <h2>Portée <em>jusqu'où aller</em></h2>
+    <div class="seuil">
+      <span class="lab">Seuil de décrochage</span>
+      <div class="seg" id="floorSeg"></div>
+    </div>
+    <div class="grid" id="rangeCards"></div>
+    <div class="strip" style="margin-top:10px"><canvas id="rscatter"></canvas></div>
+    <p class="note" id="rangeNote"></p>
+  </section>
+
+  <h2 id="hEnergy">Énergie</h2>
   <div class="spark" id="spark"></div>
 
   <h2>Source</h2>
@@ -12976,7 +13000,7 @@ section[hidden]{display:none}
 /* ============================ palette ============================ */
 const C = {
   encre:'#101427', nuit:'#161B33', trait:'#2B3460', craie:'#EFECE4',
-  ardoise:'#8D97BE', pompe:'#FFC24B', pompeFort:'#FF8A3D', chute:'#7C8CFF', lance:'#4FD6E4'
+  ardoise:'#8D97BE', pompe:'#FFC24B', pompeFort:'#FF8A3D', chute:'#7C8CFF', lance:'#4FD6E4', alerte:'#FF6B4A'
 };
 const RAMP = [
   [-4.0,[67,81,206]], [-1.2,[124,140,255]], [-0.15,[112,122,166]],
@@ -13021,8 +13045,9 @@ function parseEdgeTX(text, label){
   if(iTime<0) throw new Error('Colonne Time absente — ce n\'est pas un log EdgeTX');
   const iAlt  = idx('alt','galt','altitude');
   const iVs   = idx('vspd','vspeed','vv');
-  const iRssi = idx('rssi','1rss','rss');
-  const iLq   = idx('tqly','rqly','lqly','vfr');
+  const iRssi = idx('rssi','1rss','rss','trss');
+  const iLq   = idx('rqly','tqly','lqly','vfr');
+  const lqName = iLq<0 ? '' : (names[iLq]==='rqly' ? 'RQly' : names[iLq]==='tqly' ? 'TQly' : 'LQ');
   const iBat  = idx('rxbt','a1','a2','vfas');
   const iThr  = idx('thr');
 
@@ -13083,8 +13108,14 @@ function parseEdgeTX(text, label){
   const date = iDate>=0 ? (lines[1].split(',')[iDate]||'') : '';
   const srt=[...altR].sort((a,b)=>a-b), ground = srt[Math.floor(srt.length*0.02)];
 
+  /* FrSky publie un RSSI 0-100 (étiqueté « dB » à tort), ExpressLRS et Crossfire
+     publient des dBm négatifs. Les seuils n'ont rien à voir : il faut trancher. */
+  const rv = rssi.filter(isFinite);
+  const rssiScale = (rv.length && rv.filter(x=>x>=0).length > rv.length*0.8) ? 'pct' : 'dbm';
+
   return {label, date, t, alt:altR, altAbs:alt, vRaw, v:vSm, vFast, vStd, dt, ground,
           rssi, lq, bat, thr, motor, hasMotor, boost:new Uint8Array(nS),
+          rssiScale, lqName,
           hasRssi:rssi.some(isFinite), hasLq:lq.some(isFinite), hasBat:bat.some(isFinite),
           derived:!hasVs, clock0: (function(){const m=String(lines[1].split(',')[iTime]).match(/(\d+):(\d+):(\d+)/);
             return m? (+m[1])*3600+(+m[2])*60+(+m[3]) : 0;})()};
@@ -13238,7 +13269,7 @@ function looksLikeSession(F){
 
 /* ============================ état ============================ */
 const S = { flight:null, therms:[], flights:[], glide:null,
-            seuil:0.4, launchThr:6, view:null, zoom:null, cursor:null, sound:false };
+            seuil:0.4, launchThr:6, floor:42, view:null, zoom:null, cursor:null, sound:false };
 
 /* ============================ canvas util ============================ */
 function fit(cv){
@@ -13549,6 +13580,202 @@ function drawHist(){
   ctx.textAlign='center'; ctx.fillText('chute en plané calme  ·  m/s', L+pw/2, T+ph+5);
 }
 
+/* ============================ liaison ============================ */
+/* Seuil de décrochage par défaut selon l'échelle détectée. */
+function defaultFloor(F){ return F.rssiScale==='pct' ? 42 : -105; }
+function floorOptions(F){
+  return F.rssiScale==='pct'
+    ? [{v:40,l:'40'},{v:42,l:'42'},{v:45,l:'45'}]
+    : [{v:-95,l:'−95'},{v:-105,l:'−105'},{v:-112,l:'−112'}];
+}
+function rssiUnit(F){ return F.rssiScale==='pct' ? '' : ' dBm'; }
+
+/* Marge = distance au décrochage. Sur les deux échelles un point vaut ~1 dB. */
+function linkStats(F){
+  const out={min:Infinity, at:0, lqMin:Infinity, n:0};
+  for(let i=0;i<F.t.length;i++){
+    if(SESSION() && F.alt[i] < F.ground+5) continue;   // au sol : antenne masquée, sans intérêt
+    if(isFinite(F.rssi[i])){ out.n++; if(F.rssi[i]<out.min){ out.min=F.rssi[i]; out.at=F.t[i]; } }
+    if(isFinite(F.lq[i])) out.lqMin=Math.min(out.lqMin,F.lq[i]);
+  }
+  if(!out.n) return null;
+  out.margin = out.min - S.floor;
+  out.factor = Math.pow(2, out.margin/6);             // 6 dB par doublement de distance
+  return out;
+}
+
+function drawLink(){
+  const cv=document.getElementById('link'); if(!cv || cv.offsetParent===null) return;
+  const F=S.flight, {ctx,w,h}=fit(cv);
+  ctx.clearRect(0,0,w,h);
+  const [v0,v1]=S.view, L=44,R=12, pw=w-L-R;
+  const X=t=>L+(t-v0)/(v1-v0)*pw;
+  const hasLq=F.hasLq;
+  const laneH = hasLq ? 44 : 78, gap=8, y1=6, y2=y1+laneH+gap;
+
+  let i0=0,i1=F.t.length-1;
+  for(let i=0;i<F.t.length;i++){ if(F.t[i]<v0){i0=i;continue;} if(F.t[i]>v1){i1=i;break;} i1=i; }
+  const P=decimate(F,i0,i1,pw,v0,v1);
+
+  // ─ voie RSSI ─
+  let lo,hi;
+  lo=Infinity; hi=-Infinity;
+  for(const i of P) if(isFinite(F.rssi[i])){ lo=Math.min(lo,F.rssi[i]); hi=Math.max(hi,F.rssi[i]); }
+  if(!isFinite(lo)){ lo=F.rssiScale==='pct'?0:-110; hi=F.rssiScale==='pct'?100:-40; }
+  lo=Math.min(lo, S.floor)-5;
+  hi=F.rssiScale==='pct' ? Math.min(102, hi+3) : hi+4;
+  const Y1=v=>y1+(hi-v)/(hi-lo)*laneH;
+
+  const worst=Math.min(...P.filter(i=>isFinite(F.rssi[i])).map(i=>F.rssi[i]));
+  const marg = worst - S.floor;
+  const tint = marg<6 ? C.alerte : marg<15 ? C.pompe : C.ardoise;
+
+  ctx.beginPath(); ctx.moveTo(X(F.t[P[0]]), y1+laneH);
+  for(const i of P) if(isFinite(F.rssi[i])) ctx.lineTo(X(F.t[i]), Y1(F.rssi[i]));
+  ctx.lineTo(X(F.t[P[P.length-1]]), y1+laneH); ctx.closePath();
+  const gr=ctx.createLinearGradient(0,y1,0,y1+laneH);
+  gr.addColorStop(0,tint+'44'); gr.addColorStop(1,tint+'08');
+  ctx.fillStyle=gr; ctx.fill();
+  ctx.beginPath(); let started=false;
+  for(const i of P) if(isFinite(F.rssi[i])){
+    const x=X(F.t[i]),y=Y1(F.rssi[i]); started?ctx.lineTo(x,y):(ctx.moveTo(x,y),started=true); }
+  ctx.strokeStyle=tint; ctx.lineWidth=1.6; ctx.stroke();
+
+  // seuil de décrochage
+  const yf=Y1(S.floor);
+  if(yf>y1-2 && yf<y1+laneH+2){
+    ctx.strokeStyle='rgba(255,107,74,.65)'; ctx.setLineDash([3,3]); ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(L,yf+.5); ctx.lineTo(w-R,yf+.5); ctx.stroke(); ctx.setLineDash([]);
+  }
+  ctx.font='9px "IBM Plex Mono",monospace'; ctx.textAlign='right'; ctx.textBaseline='middle';
+  ctx.fillStyle='rgba(141,151,190,.85)'; ctx.fillText('RSSI', L-8, y1+laneH/2);
+  if(yf>y1-2 && yf<y1+laneH+2){
+    ctx.fillStyle='rgba(255,107,74,.85)'; ctx.textAlign='left';
+    const below = yf < y1+laneH-13;
+    ctx.textBaseline = below ? 'top' : 'bottom';
+    ctx.fillText('décrochage '+S.floor, L+4, yf + (below?3:-3));
+    ctx.textBaseline='middle';
+  }
+
+  // ─ voie qualité de lien ─
+  if(hasLq){
+    const Y2=v=>y2+(100-v)/100*laneH;
+    ctx.beginPath(); ctx.moveTo(X(F.t[P[0]]), y2+laneH);
+    for(const i of P) if(isFinite(F.lq[i])) ctx.lineTo(X(F.t[i]), Y2(F.lq[i]));
+    ctx.lineTo(X(F.t[P[P.length-1]]), y2+laneH); ctx.closePath();
+    ctx.fillStyle='rgba(124,140,255,.16)'; ctx.fill();
+    ctx.beginPath(); started=false;
+    for(const i of P) if(isFinite(F.lq[i])){
+      const x=X(F.t[i]),y=Y2(F.lq[i]); started?ctx.lineTo(x,y):(ctx.moveTo(x,y),started=true); }
+    ctx.strokeStyle=C.chute; ctx.lineWidth=1.6; ctx.stroke();
+    ctx.fillStyle='rgba(141,151,190,.85)'; ctx.textAlign='right';
+    ctx.fillText((F.lqName||'LQ')+' %', L-8, y2+laneH/2);
+  }
+
+  // curseur partagé avec le barographe
+  if(S.cursor!=null){
+    const x=X(F.t[S.cursor]);
+    if(x>=L && x<=w-R){
+      ctx.strokeStyle='rgba(239,236,228,.35)'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(x+.5,y1); ctx.lineTo(x+.5,hasLq?y2+laneH:y1+laneH); ctx.stroke();
+    }
+  }
+}
+
+function updateLinkReadout(){
+  const F=S.flight, el=document.getElementById('lkVal'); if(!el) return;
+  const i=S.cursor;
+  if(i==null || !isFinite(F.rssi[i])){ el.textContent='—'; return; }
+  const lq = F.hasLq && isFinite(F.lq[i]) ? ` · ${F.lqName} ${nf(F.lq[i],0)} %` : '';
+  el.textContent = `${nf(F.rssi[i],0)}${rssiUnit(F)} · marge ${sgn(F.rssi[i]-S.floor,0)} dB${lq}`;
+}
+
+/* ============================ portée ============================ */
+function renderRange(){
+  const F=S.flight, sec=document.getElementById('secRange');
+  if(!F.hasRssi){ sec.hidden=true; return; }
+  sec.hidden=false;
+  const st=linkStats(F);
+  if(!st){ sec.hidden=true; return; }
+
+  document.getElementById('floorSeg').innerHTML = floorOptions(F).map(o=>
+    `<button data-s="${o.v}" aria-pressed="${o.v===S.floor}">${o.l}</button>`).join('');
+
+  const fac = st.factor;
+  const facTxt = fac>=1 ? '×'+nf(fac,1) : '×'+nf(fac,2);
+  const tone = st.margin<6 ? {} : st.margin<15 ? {gold:true} : {};
+  document.getElementById('rangeCards').innerHTML=[
+    {k:'RSSI le plus bas', v:nf(st.min,0), u:rssiUnit(F).trim(), s:'à '+mmss(st.at)+' de vol'},
+    Object.assign({k:'Marge restante', v:sgn(st.margin,0), u:'dB', s:'au-dessus de '+S.floor+rssiUnit(F)}, tone),
+    {k:'Distance théorique', v:facTxt, u:'', s:'de ce qui a été volé', gold:st.margin>=15},
+    F.hasLq ? {k:F.lqName+' minimale', v:nf(st.lqMin,0), u:'%', s:'qualité du lien'} : null
+  ].filter(Boolean).map(cardHTML).join('');
+
+  drawRangeScatter();
+  const lqWarn = F.lqName==='TQly'
+    ? ' <b>TQly mesure la voie descendante (télémétrie)</b>, pas le lien de commande : elle décroche avant que le pilotage soit menacé, c\'est un indicateur pessimiste.'
+    : '';
+  document.getElementById('rangeNote').innerHTML =
+    `La distance théorique applique la perte en espace libre : 6 dB par doublement de distance. `+
+    `<b>Elle ignore le relief, les lobes d'antenne et l'orientation du planeur</b> — un virage qui `+
+    `présente la tranche du fuselage coûte facilement 10 dB. À prendre comme un ordre de grandeur, `+
+    `pas comme une autorisation.${lqWarn}`;
+}
+
+/* Le RSSI dépend de la distance, pas de l'altitude — mais sur un vol de pente
+   ou de thermique l'altitude en est le meilleur indice disponible sans GPS. */
+function drawRangeScatter(){
+  const cv=document.getElementById('rscatter'); if(!cv) return;
+  const F=S.flight, {ctx,w,h}=fit(cv);
+  ctx.clearRect(0,0,w,h);
+  const L=42,R=12,T=10,B=22, pw=w-L-R, ph=h-T-B;
+  const pts=[];
+  const stride=Math.max(1,Math.floor(F.t.length/700));
+  for(let i=0;i<F.t.length;i+=stride){
+    if(!isFinite(F.rssi[i])) continue;
+    if(F.alt[i] < F.ground+5) continue;
+    pts.push([F.alt[i], F.rssi[i]]);
+  }
+  if(pts.length<10){ ctx.fillStyle='rgba(141,151,190,.7)'; ctx.font='11px sans-serif';
+    ctx.textAlign='center'; ctx.fillText('Pas assez de points en vol', w/2, h/2); return; }
+
+  const ax=Math.max(...pts.map(p=>p[0]));
+  let rlo=Math.min(...pts.map(p=>p[1])), rhi=Math.max(...pts.map(p=>p[1]));
+  rlo=Math.min(rlo,S.floor)-3; rhi+=3;
+  const X=a=>L+a/Math.max(1,ax)*pw, Y=r=>T+(rhi-r)/(rhi-rlo)*ph;
+
+  const st=step(rhi-rlo,3);
+  ctx.font='9px "IBM Plex Mono",monospace'; ctx.textBaseline='middle';
+  for(let r=Math.ceil(rlo/st)*st;r<rhi;r+=st){
+    const y=Y(r);
+    ctx.strokeStyle='rgba(43,52,96,.7)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(L,y+.5); ctx.lineTo(w-R,y+.5); ctx.stroke();
+    ctx.fillStyle='rgba(141,151,190,.8)'; ctx.textAlign='right'; ctx.fillText(Math.round(r),L-6,y);
+  }
+  const yf=Y(S.floor);
+  if(yf>T && yf<T+ph){
+    ctx.strokeStyle='rgba(255,107,74,.6)'; ctx.setLineDash([3,3]);
+    ctx.beginPath(); ctx.moveTo(L,yf+.5); ctx.lineTo(w-R,yf+.5); ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  ctx.fillStyle='rgba(141,151,190,.35)';
+  for(const [a,r] of pts){ ctx.beginPath(); ctx.arc(X(a),Y(r),1.4,0,7); ctx.fill(); }
+
+  // médiane par tranche d'altitude
+  const NB=10, bins=Array.from({length:NB},()=>[]);
+  for(const [a,r] of pts) bins[Math.min(NB-1,Math.floor(a/Math.max(1,ax)*NB))].push(r);
+  ctx.beginPath(); let go=false;
+  bins.forEach((b,k)=>{ if(b.length<4) return;
+    const x=X((k+.5)/NB*ax), y=Y(median(b));
+    go?ctx.lineTo(x,y):(ctx.moveTo(x,y),go=true); });
+  ctx.strokeStyle=C.pompe; ctx.lineWidth=1.8; ctx.stroke();
+
+  ctx.font='9px "IBM Plex Mono",monospace'; ctx.fillStyle='rgba(141,151,190,.8)';
+  ctx.textBaseline='top'; ctx.textAlign='left'; ctx.fillText('0', L, T+ph+5);
+  ctx.textAlign='right'; ctx.fillText(nf(ax,0)+' m', w-R, T+ph+5);
+  ctx.textAlign='center'; ctx.fillText('RSSI selon l\'altitude', L+pw/2, T+ph+5);
+}
+
 /* ============================ sparklines ============================ */
 function drawSpark(cv, series, color){
   const {ctx,w,h}=fit(cv);
@@ -13762,10 +13989,8 @@ function renderFlights(){
 function renderSpark(){
   const F=S.flight, box=document.getElementById('spark');
   const defs=[];
-  if(F.hasRssi) defs.push({k:'RSSI',u:'dB',s:F.rssi,c:'#7C8CFF',d:0});
-  if(F.hasLq)   defs.push({k:'Qualité lien',u:'%',s:F.lq,c:'#FFC24B',d:0});
-  if(F.hasBat)  defs.push({k:'Batterie RX',u:'V',s:F.bat,c:'#EFECE4',d:2});
-  if(!defs.length){ box.innerHTML='<div class="empty">Pas de données de liaison dans ce log.</div>'; return; }
+  if(F.hasBat) defs.push({k:'Batterie RX',u:'V',s:F.bat,c:'#EFECE4',d:2});
+  if(!defs.length){ box.innerHTML='<div class="empty">Pas de données d\'énergie dans ce log.</div>'; return; }
   box.innerHTML = defs.map((d,i)=>{
     const vals=d.s.filter(isFinite);
     const last=vals[vals.length-1], min=Math.min(...vals);
@@ -13800,7 +14025,8 @@ function setView(a, b){
 let rafPending=null;
 function redraw(){
   if(rafPending) return;
-  rafPending=requestAnimationFrame(()=>{ rafPending=null; drawBaro(); drawVario(); drawMini(); });
+  rafPending=requestAnimationFrame(()=>{ rafPending=null;
+    drawBaro(); drawLink(); drawVario(); drawMini(); updateLinkReadout(); });
 }
 
 /* ============================ vue d'ensemble ============================ */
@@ -14055,6 +14281,8 @@ function pick(i){
   S.view=[S.flight.t[0], S.flight.t[S.flight.t.length-1]];
   document.getElementById('zoomtag').classList.remove('on');
   document.getElementById('ov').hidden = (S.flight.t[S.flight.t.length-1]-S.flight.t[0]) < 120;
+  document.getElementById('lk').hidden = !S.flight.hasRssi;
+  S.floor = defaultFloor(S.flight);
   document.getElementById('rT').textContent='—';
   document.getElementById('rA').innerHTML='—<u>m</u>';
   const rv=document.getElementById('rV'); rv.innerHTML='—<u>m/s</u>'; rv.style.color='';
@@ -14085,8 +14313,15 @@ function recompute(){
     const t=S.therms.find(x=>Math.abs(x.t0-S.zoom.t0)<15);
     if(t){ S.zoom=t; } else zoomOut();
   }
+  renderRange();
   redraw();
 }
+
+document.getElementById('floorSeg').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  S.floor=parseFloat(b.dataset.s);
+  renderRange(); redraw();
+});
 
 function renderWarn(){
   const F=S.flight, el=document.getElementById('warn');
@@ -14111,8 +14346,9 @@ document.getElementById('file').addEventListener('change',e=>{
 /* ============================ init ============================ */
 window.addEventListener('resize',()=>{
   if(!S.flight) return;
-  drawBaro(); drawVario(); drawMini(); renderSpark();
+  drawBaro(); drawLink(); drawVario(); drawMini(); renderSpark();
   if(SESSION()){ drawScatter(); drawHist(); }
+  if(!document.getElementById('secRange').hidden) drawRangeScatter();
 });
 document.fonts && document.fonts.ready.then(()=>{ if(S.flight) redraw(); });
 
