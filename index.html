@@ -160,6 +160,8 @@ h2 em{font-style:normal;font-size:11px;letter-spacing:.06em;text-transform:none;
 .card.gold .v{color:var(--pompe)}
 .card.gold::before{content:"";position:absolute;inset:auto 0 0 0;height:2px;
   background:linear-gradient(90deg,var(--pompe-fort),var(--pompe),transparent)}
+.card.wide{grid-column:1/-1}
+.card.wide .v{font-size:25px}
 .card.cyan .v{color:var(--lance)}
 .card.cyan::before{content:"";position:absolute;inset:auto 0 0 0;height:2px;
   background:linear-gradient(90deg,var(--lance),rgba(79,214,228,.2),transparent)}
@@ -167,6 +169,13 @@ h2 em{font-style:normal;font-size:11px;letter-spacing:.06em;text-transform:none;
 /* ---------- seuil ---------- */
 .seuil{display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap}
 .seuil .lab{font-size:11px;color:var(--ardoise);letter-spacing:.06em}
+.numin{display:flex;align-items:center;background:var(--nuit);border:1px solid var(--trait);
+  border-radius:11px;padding:3px 8px 3px 4px}
+.numin input{width:56px;background:none;border:none;color:var(--craie);font-size:13px;text-align:right;
+  padding:6px 3px;font-family:"IBM Plex Mono",ui-monospace,monospace;appearance:textfield}
+.numin input::-webkit-outer-spin-button,.numin input::-webkit-inner-spin-button{appearance:none;margin:0}
+.numin input:focus{outline:none;color:var(--pompe)}
+.numin span{font-size:11px;color:var(--ardoise);margin-left:3px}
 .seg{display:flex;background:var(--nuit);border:1px solid var(--trait);border-radius:11px;padding:3px;gap:3px}
 .seg button{
   border:none;background:none;color:var(--ardoise);font-family:inherit;font-size:12px;
@@ -375,8 +384,25 @@ section[hidden]{display:none}
     <p class="note" id="rangeNote"></p>
   </section>
 
-  <h2 id="hEnergy">Énergie</h2>
-  <div class="spark" id="spark"></div>
+  <section id="secEnergy">
+    <h2>Énergie <em>la batterie de réception</em></h2>
+    <div class="seuil" id="packCtl">
+      <div class="seg" id="cellSeg">
+        <button data-c="1" aria-pressed="true">1S</button>
+        <button data-c="2" aria-pressed="false">2S</button>
+        <button data-c="3" aria-pressed="false">3S</button>
+      </div>
+      <div class="seg" id="chemSeg">
+        <button data-x="lipo" aria-pressed="true">LiPo</button>
+        <button data-x="life" aria-pressed="false">LiFe</button>
+        <button data-x="nimh" aria-pressed="false">NiMH</button>
+      </div>
+      <label class="numin"><input type="number" id="cap" value="300" min="50" max="5000" step="50"><span>mAh</span></label>
+    </div>
+    <div class="grid" id="energyCards"></div>
+    <div class="spark" id="spark" style="margin-top:10px"></div>
+    <p class="note" id="energyNote"></p>
+  </section>
 
   <h2>Source</h2>
   <div class="chips" id="chips"></div>
@@ -4746,7 +4772,7 @@ function looksLikeSession(F){
 
 /* ============================ état ============================ */
 const S = { flight:null, therms:[], flights:[], glide:null,
-            seuil:0.4, launchThr:3.5, floor:42, view:null, zoom:null, cursor:null, sound:false };
+            seuil:0.4, launchThr:3.5, floor:42, cells:1, chem:'lipo', capacity:300, view:null, zoom:null, cursor:null, sound:false };
 
 /* ============================ canvas util ============================ */
 function fit(cv){
@@ -5237,6 +5263,123 @@ function drawRangeScatter(){
   ctx.textAlign='center'; ctx.fillText('RSSI selon l\'altitude', L+pw/2, T+ph+5);
 }
 
+/* ============================ batterie ============================ */
+/* Courbes de décharge au repos, en volts par élément. LiFe et NiMH sont
+   quasi plates : la tension y renseigne mal sur la charge, et l'outil le dit. */
+const CURVES = {
+  lipo: [[4.20,100],[4.15,95],[4.11,90],[4.08,85],[4.02,80],[3.98,75],[3.95,70],[3.91,65],
+         [3.87,60],[3.85,55],[3.84,50],[3.82,45],[3.80,40],[3.79,35],[3.77,30],[3.75,25],
+         [3.73,20],[3.71,15],[3.69,10],[3.61,5],[3.30,0]],
+  life: [[3.60,100],[3.40,90],[3.33,75],[3.30,60],[3.28,45],[3.25,30],[3.22,20],[3.15,10],[2.90,0]],
+  nimh: [[1.45,100],[1.38,90],[1.32,75],[1.28,60],[1.26,45],[1.24,30],[1.21,20],[1.15,10],[1.00,0]]
+};
+const CHEM_LABEL = {lipo:'LiPo', life:'LiFe', nimh:'NiMH'};
+
+function socFromV(v, chem){
+  const c=CURVES[chem];
+  if(v>=c[0][0]) return 100;
+  if(v<=c[c.length-1][0]) return 0;
+  for(let i=1;i<c.length;i++){
+    if(v>=c[i][0]){
+      const [v1,s1]=c[i-1], [v0,s0]=c[i];
+      return s0 + (v-v0)/(v1-v0)*(s1-s0);
+    }
+  }
+  return 0;
+}
+
+/* Le pack se devine : un 1S LiPo plafonne vers 4,2 V, un 2S vers 8,4, un pack
+   NiMH de réception vit entre 4,8 et 6 V. */
+function guessPack(F){
+  const v=F.bat.filter(isFinite); if(!v.length) return null;
+  const vmax=Math.max(...v);
+  for(const chem of ['lipo','life','nimh']){
+    const top=CURVES[chem][0][0];
+    for(let n=1;n<=8;n++){
+      const per=vmax/n;
+      if(per<=top+0.03 && per>=top-0.42) return {cells:n, chem};
+    }
+  }
+  return {cells:1, chem:'lipo'};
+}
+
+/* Résolution du log : beaucoup de radios n'écrivent la tension qu'au dixième
+   de volt, ce qui plafonne mécaniquement la précision de l'estimation. */
+function voltRes(F){
+  const v=F.bat.filter(isFinite);
+  if(!v.length) return 0.01;
+  // le plus grand pas qui divise toutes les valeurs : c'est la vraie granularité
+  for(const step of [0.1,0.05,0.02,0.01]){
+    if(v.every(x=>Math.abs(x/step - Math.round(x/step)) < 0.02)) return step;
+  }
+  return 0.01;
+}
+
+/* Tension au repos approchée : on prend le haut de la fenêtre, les creux étant
+   dus aux appels de courant des servos. */
+function restingV(F, from, to){
+  const seg=[];
+  for(let i=from;i<=to && i<F.bat.length;i++) if(isFinite(F.bat[i])) seg.push(F.bat[i]);
+  if(!seg.length) return null;
+  seg.sort((a,b)=>a-b);
+  return seg[Math.floor(seg.length*0.9)];
+}
+
+function renderEnergy(){
+  const F=S.flight, sec=document.getElementById('secEnergy');
+  if(!F.hasBat){ sec.hidden=true; return; }
+  sec.hidden=false;
+
+  const n=F.t.length, dur=F.t[n-1]-F.t[0];
+  const win=Math.max(5, Math.min(Math.floor(n/6), Math.round(60/F.dt)));
+  const v0=restingV(F,0,win), v1=restingV(F,n-1-win,n-1);
+  const res=voltRes(F);
+  const per0=v0/S.cells, per1=v1/S.cells;
+  const soc0=socFromV(per0,S.chem), soc1=socFromV(per1,S.chem);
+  /* Une chute d'un seul pas de quantification n'est pas une mesure : sur un vol
+     court elle donnerait des centaines de milliampères sortis de nulle part. */
+  const measurable = (v0-v1) >= 1.5*res;
+  const used = measurable ? Math.max(0,(soc0-soc1))/100*S.capacity : 0;
+  const mA = (measurable && dur>0) ? used/(dur/3600) : 0;
+
+  // fourchette imposée par la résolution du log
+  const hi=socFromV((v1+res/2)/S.cells,S.chem), lo=socFromV((v1-res/2)/S.cells,S.chem);
+
+  const RESERVE=20;
+  let left=null;
+  if(measurable && used>0.5 && soc1>RESERVE) left = (soc1-RESERVE)/100*S.capacity/(used/(dur/60));
+
+  const cards=[
+    {k:'Tension par élément', v:nf(per0,2)+'<u style="margin:0 4px">→</u>'+nf(per1,2), u:'V',
+     s:S.cells+'S '+CHEM_LABEL[S.chem]+' · '+nf(v0,2)+' → '+nf(v1,2)+' V au pack', wide:true},
+    {k:'Charge restante', v:'~'+nf(soc1,0), u:'%',
+     s: hi-lo>4 ? 'entre '+nf(lo,0)+' et '+nf(hi,0)+' % selon la résolution' : 'estimation par la tension',
+     gold: soc1<30},
+    {k:'Consommation', v: used>0.5 ? nf(used,0) : '—', u: used>0.5?'mAh':'',
+     s: used>0.5 ? nf(mA,0)+' mA de moyenne sur '+mmss(dur)
+                 : 'chute inférieure au pas de '+nf(res,2)+' V : non mesurable'},
+    {k:'Autonomie restante', v: left!=null ? '~'+nf(left,0) : '—', u: left!=null?'min':'',
+     s: left!=null ? 'au même rythme, jusqu\'à '+RESERVE+' % de réserve'
+                   : (soc1<=RESERVE ? 'déjà sous la réserve' : 'demande une consommation mesurable'),
+     gold: left!=null && left<10}
+  ];
+  document.getElementById('energyCards').innerHTML=cards.map(cardHTML).join('');
+  renderSpark();
+
+  const coarse = res>=0.05
+    ? `<b>Ta radio n'enregistre la tension qu'au ${nf(res,2)} V près</b> : sur ${S.cells}S, un pas
+       couvre une bonne dizaine de points de charge. Les valeurs ci-dessus sont des ordres de grandeur. `
+    : '';
+  const flat = S.chem!=='lipo'
+    ? `La courbe ${CHEM_LABEL[S.chem]} est très plate : la tension y renseigne mal sur la charge, `+
+      `l'estimation vaut surtout pour les extrêmes. `
+    : '';
+  document.getElementById('energyNote').innerHTML = coarse + flat +
+    `Lecture faite sur le haut de la plage (9e décile) pour approcher la tension au repos, les creux `+
+    `venant des appels de courant des servos. <b>Un pack se juge au banc, pas au barographe</b> : `+
+    `à utiliser pour surveiller une dérive d'une séance à l'autre, pas pour décider d'un dernier vol.`;
+}
+
 /* ============================ sparklines ============================ */
 function drawSpark(cv, series, color){
   const {ctx,w,h}=fit(cv);
@@ -5272,7 +5415,7 @@ function renderIdent(){
 }
 
 function cardHTML(c){
-  return `<div class="card${c.gold?' gold':c.cyan?' cyan':''}"><div class="k">${c.k}</div>`+
+  return `<div class="card${c.gold?' gold':c.cyan?' cyan':''}${c.wide?' wide':''}"><div class="k">${c.k}</div>`+
          `<div class="v mono">${c.v}${c.u?`<u>${c.u}</u>`:''}</div><div class="s">${c.s}</div></div>`;
 }
 const SESSION = () => S.flights.length>=3;
@@ -5767,6 +5910,12 @@ function pick(i){
   document.getElementById('ov').hidden = (S.flight.t[S.flight.t.length-1]-S.flight.t[0]) < 120;
   document.getElementById('lk').hidden = !S.flight.hasRssi;
   S.floor = defaultFloor(S.flight);
+  const pack = guessPack(S.flight);
+  if(pack){
+    S.cells=pack.cells; S.chem=pack.chem;
+    document.querySelectorAll('#cellSeg button').forEach(x=>x.setAttribute('aria-pressed', +x.dataset.c===S.cells));
+    document.querySelectorAll('#chemSeg button').forEach(x=>x.setAttribute('aria-pressed', x.dataset.x===S.chem));
+  }
   document.getElementById('rT').textContent='—';
   document.getElementById('rA').innerHTML='—<u>m</u>';
   const rv=document.getElementById('rV'); rv.innerHTML='—<u>m/s</u>'; rv.style.color='';
@@ -5798,8 +5947,26 @@ function recompute(){
     if(t){ S.zoom=t; } else zoomOut();
   }
   renderRange();
+  renderEnergy();
   redraw();
 }
+
+document.getElementById('cellSeg').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  S.cells=+b.dataset.c;
+  document.querySelectorAll('#cellSeg button').forEach(x=>x.setAttribute('aria-pressed', x===b));
+  renderEnergy();
+});
+document.getElementById('chemSeg').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  S.chem=b.dataset.x;
+  document.querySelectorAll('#chemSeg button').forEach(x=>x.setAttribute('aria-pressed', x===b));
+  renderEnergy();
+});
+document.getElementById('cap').addEventListener('input',e=>{
+  const v=parseFloat(e.target.value);
+  if(isFinite(v) && v>0){ S.capacity=v; renderEnergy(); }
+});
 
 document.getElementById('floorSeg').addEventListener('click',e=>{
   const b=e.target.closest('button'); if(!b) return;
